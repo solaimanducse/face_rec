@@ -8,13 +8,13 @@ A simple Python app that recognizes faces and greets people by name!
 - **Add new people**: Scan and save faces to database
 
 ## 🚀 Requirements
-- Python 3.7+
+- Python 3.10
 - Camera/Webcam
 
 ## 🔧 Installation
 
 ```bash
-pip install opencv-python mediapipe numpy pillow
+pip install -r requirements.txt
 ```
 
 ## 🚀 Usage
