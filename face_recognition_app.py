@@ -6,11 +6,12 @@ import os
 from typing import Dict, List, Tuple, Optional
 
 class MediaPipeFaceDatabase:
-    """Face database using MediaPipe face detection"""
+    """Face database using MediaPipe face detection with multi-angle support"""
     
     def __init__(self, db_file: str = "face_database_mp.pkl"):
         self.db_file = db_file
-        self.face_data: Dict[str, np.ndarray] = {}
+        # Changed to store multiple face samples per person: Dict[name, List[features]]
+        self.face_data: Dict[str, List[np.ndarray]] = {}
         self.load_database()
     
     def load_database(self) -> None:
@@ -18,8 +19,18 @@ class MediaPipeFaceDatabase:
         try:
             if os.path.exists(self.db_file):
                 with open(self.db_file, 'rb') as f:
-                    self.face_data = pickle.load(f)
-                print(f"Loaded {len(self.face_data)} faces from database")
+                    loaded_data = pickle.load(f)
+                    
+                    # Handle backward compatibility - convert old format to new
+                    if loaded_data and isinstance(list(loaded_data.values())[0], np.ndarray):
+                        # Old format: Dict[str, np.ndarray] -> convert to Dict[str, List[np.ndarray]]
+                        self.face_data = {name: [features] for name, features in loaded_data.items()}
+                        print(f"Converted old database format. Loaded {len(self.face_data)} people from database")
+                    else:
+                        # New format: Dict[str, List[np.ndarray]]
+                        self.face_data = loaded_data
+                        total_samples = sum(len(samples) for samples in self.face_data.values())
+                        print(f"Loaded {len(self.face_data)} people with {total_samples} total face samples")
             else:
                 print("No existing database found. Creating new database.")
                 self.face_data = {}
@@ -32,7 +43,8 @@ class MediaPipeFaceDatabase:
         try:
             with open(self.db_file, 'wb') as f:
                 pickle.dump(self.face_data, f)
-            print(f"Database saved with {len(self.face_data)} faces")
+            total_samples = sum(len(samples) for samples in self.face_data.values())
+            print(f"Database saved with {len(self.face_data)} people and {total_samples} total face samples")
         except Exception as e:
             print(f"Error saving database: {e}")
     
@@ -57,19 +69,25 @@ class MediaPipeFaceDatabase:
         return hist
     
     def add_face(self, name: str, face_image: np.ndarray) -> bool:
-        """Add a new face to the database"""
+        """Add a new face sample to the database"""
         try:
             features = self.extract_face_features(face_image)
-            self.face_data[name] = features
+            
+            if name not in self.face_data:
+                self.face_data[name] = []
+            
+            self.face_data[name].append(features)
             self.save_database()
-            print(f"Added {name} to database")
+            
+            sample_count = len(self.face_data[name])
+            print(f"Added face sample #{sample_count} for {name} to database")
             return True
         except Exception as e:
             print(f"Error adding face to database: {e}")
             return False
     
     def find_match(self, face_image: np.ndarray, threshold: float = 0.3) -> Optional[str]:
-        """Find a matching face in the database"""
+        """Find a matching face in the database using all stored samples"""
         if not self.face_data:
             return None
         
@@ -79,13 +97,25 @@ class MediaPipeFaceDatabase:
             best_match = None
             best_score = float('inf')
             
-            for name, stored_features in self.face_data.items():
-                # Calculate correlation coefficient
-                score = np.corrcoef(features, stored_features)[0, 1]
-                distance = 1 - score  # Convert correlation to distance
+            for name, stored_samples in self.face_data.items():
+                # Compare against all samples for this person and take the best match
+                person_best_score = float('inf')
                 
-                if distance < best_score:
-                    best_score = distance
+                for stored_features in stored_samples:
+                    try:
+                        # Calculate correlation coefficient
+                        score = np.corrcoef(features, stored_features)[0, 1]
+                        distance = 1 - score  # Convert correlation to distance
+                        
+                        if distance < person_best_score:
+                            person_best_score = distance
+                    except:
+                        # Skip this sample if correlation fails
+                        continue
+                
+                # Use the best score from all samples of this person
+                if person_best_score < best_score:
+                    best_score = person_best_score
                     best_match = name
             
             if best_score < threshold:
@@ -116,8 +146,16 @@ class MediaPipeFaceDatabase:
             return False
     
     def get_database_size(self) -> int:
-        """Get the number of faces in database"""
+        """Get the number of people in database"""
         return len(self.face_data)
+    
+    def get_total_samples(self) -> int:
+        """Get the total number of face samples in database"""
+        return sum(len(samples) for samples in self.face_data.values())
+    
+    def get_person_sample_count(self, name: str) -> int:
+        """Get the number of samples for a specific person"""
+        return len(self.face_data.get(name, []))
 
 
 class MediaPipeFaceRecognitionApp:
@@ -259,51 +297,105 @@ class MediaPipeFaceRecognitionApp:
         return frame
     
     def capture_and_add_face(self, name: str) -> bool:
-        """Capture a face and add it to the database"""
+        """Capture multiple face angles and add them to the database"""
         if not self.camera:
             print("Camera not initialized")
             return False
         
-        print(f"Capturing face for {name}. Please look at the camera...")
+        print(f"\n🎯 Multi-Angle Face Capture for {name}")
+        print("=" * 50)
+        print("📸 We'll capture your face from 5 different angles:")
+        print("   1. Looking straight ahead (frontal)")
+        print("   2. Turn head slightly to your left")
+        print("   3. Turn head slightly to your right")
+        print("   4. Tilt head slightly up")
+        print("   5. Tilt head slightly down")
+        print("\n💡 Tips: Keep good lighting, stay in frame, and follow instructions")
+        input("\nPress ENTER to start the capture process...")
         
-        # Give user time to position themselves
-        for i in range(3, 0, -1):
+        angles = [
+            ("FRONTAL", "Look straight at the camera 📷"),
+            ("LEFT_TURN", "Turn your head slightly to your LEFT ⬅️"),
+            ("RIGHT_TURN", "Turn your head slightly to your RIGHT ➡️"),
+            ("TILT_UP", "Tilt your head slightly UP ⬆️"),
+            ("TILT_DOWN", "Tilt your head slightly DOWN ⬇️")
+        ]
+        
+        successful_captures = 0
+        
+        for i, (angle_name, instruction) in enumerate(angles, 1):
+            print(f"\n📸 Capture {i}/5 - {angle_name}")
+            print(f"🎯 {instruction}")
+            
+            # Give user time to position themselves
+            for countdown in range(5, 0, -1):
+                ret, frame = self.camera.read()
+                if ret:
+                    # Draw instruction on frame
+                    cv2.putText(frame, f"Capture {i}/5: {angle_name}", (20, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    cv2.putText(frame, instruction, (20, 70), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    cv2.putText(frame, f"Capturing in {countdown}...", (20, 450), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    
+                    # Show current successful captures
+                    cv2.putText(frame, f"Successful: {successful_captures}/5", (400, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    
+                    cv2.imshow('Multi-Angle Face Capture', frame)
+                    cv2.waitKey(1000)
+            
+            # Capture the face
             ret, frame = self.camera.read()
-            if ret:
-                cv2.putText(frame, f"Capturing in {i}...", (50, 50), 
+            if not ret:
+                print(f"❌ Failed to capture frame for {angle_name}")
+                continue
+            
+            # Detect faces
+            face_locations = self.detect_faces(frame)
+            
+            if not face_locations:
+                print(f"❌ No face detected for {angle_name}. Skipping this angle.")
+                continue
+            
+            if len(face_locations) > 1:
+                print(f"❌ Multiple faces detected for {angle_name}. Skipping this angle.")
+                continue
+            
+            # Extract and save face image
+            face_image = self.extract_face_region(frame, face_locations[0])
+            
+            if face_image.size > 0:
+                # Show captured face
+                capture_display = frame.copy()
+                cv2.putText(capture_display, f"✅ {angle_name} CAPTURED!", (20, 50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                cv2.imshow('Face Capture', frame)
-                cv2.waitKey(1000)
+                cv2.imshow('Multi-Angle Face Capture', capture_display)
+                cv2.waitKey(1500)  # Show success message
+                
+                success = self.database.add_face(name, face_image)
+                if success:
+                    successful_captures += 1
+                    print(f"✅ {angle_name} captured successfully!")
+                else:
+                    print(f"❌ Failed to save {angle_name}")
+            else:
+                print(f"❌ Invalid face image for {angle_name}")
         
-        # Capture the face
-        ret, frame = self.camera.read()
-        if not ret:
-            print("Failed to capture frame")
-            return False
+        cv2.destroyWindow('Multi-Angle Face Capture')
         
-        # Detect faces
-        face_locations = self.detect_faces(frame)
+        print(f"\n📊 CAPTURE SUMMARY:")
+        print(f"   Successfully captured: {successful_captures}/5 angles")
+        print(f"   Total samples for {name}: {self.database.get_person_sample_count(name)}")
         
-        if not face_locations:
-            print("No face detected. Please try again.")
-            cv2.destroyWindow('Face Capture')
-            return False
-        
-        if len(face_locations) > 1:
-            print("Multiple faces detected. Please ensure only one person is in frame.")
-            cv2.destroyWindow('Face Capture')
-            return False
-        
-        # Extract face image
-        face_image = self.extract_face_region(frame, face_locations[0])
-        
-        if face_image.size > 0:
-            success = self.database.add_face(name, face_image)
-            cv2.destroyWindow('Face Capture')
-            return success
-        
-        cv2.destroyWindow('Face Capture')
-        return False
+        if successful_captures >= 3:
+            print(f"✅ Great! {name} has been added with {successful_captures} face angles.")
+            print("🎯 This will significantly improve recognition accuracy!")
+            return True
+        else:
+            print(f"⚠️  Only {successful_captures} angles captured. Consider trying again for better accuracy.")
+            return successful_captures > 0
     
     def run_recognition(self) -> None:
         """Main recognition loop"""
@@ -359,8 +451,8 @@ class MediaPipeFaceRecognitionApp:
             # Display instructions
             cv2.putText(main_frame, "Press 'q' to quit, 'a' to add face, 'm' to toggle mesh", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(main_frame, f"Database: {self.database.get_database_size()} faces", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(main_frame, f"Database: {self.database.get_database_size()} people, {self.database.get_total_samples()} samples", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             
             # Show main recognition window
             cv2.imshow('Face Recognition App', main_frame)
@@ -417,15 +509,25 @@ class MediaPipeFaceRecognitionApp:
 
 def main():
     """Main function"""
-    print("=== Face Recognition App with MediaPipe Face Mesh ===")
-    print("This app detects faces and matches them with the database.")
-    print("If a person is recognized, it says 'Hello [Name]'")
-    print("If not recognized, it asks for introduction.")
+    print("=== 🚀 Multi-Angle Face Recognition App with MediaPipe ===")
+    print("🎯 ENHANCED FEATURES:")
+    print("   📸 Multi-angle face capture (5 different poses)")
+    print("   🧠 Improved recognition accuracy with multiple face samples")
+    print("   📊 Smart matching against all stored face angles")
+    print("   🎨 MediaPipe face mesh visualization")
+    print()
+    print("📋 How it works:")
+    print("   • Recognizes faces using multiple stored angles per person")
+    print("   • When adding a person, captures 5 different face angles")
+    print("   • Significantly improved accuracy in various lighting and poses")
     print()
     print("🎮 Controls:")
     print("  • Press 'q' to quit")
-    print("  • Press 'a' to add new person")
+    print("  • Press 'a' to add new person (multi-angle capture)")
     print("  • Press 'm' to toggle MediaPipe face mesh preview")
+    print()
+    print("💡 Multi-angle capture includes:")
+    print("   1. Frontal view  2. Left turn  3. Right turn  4. Tilt up  5. Tilt down")
     print()
     
     app = MediaPipeFaceRecognitionApp()
